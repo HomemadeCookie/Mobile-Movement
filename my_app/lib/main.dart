@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:typed_data';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 void main() {
   runApp(const MyApp());
@@ -62,21 +67,6 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
@@ -88,15 +78,6 @@ class MyApp extends StatelessWidget {
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
 
   @override
@@ -106,6 +87,50 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   int _counter = 0;
   late CameraController _controller; // Declare the camera controller
+  Uint8List? _capturedImageData;
+  String? _lastCapturedImagePath;
+
+  Future<void> _sendImageToApi() async {
+    if (_capturedImageData == null) {
+      print('No image captured yet');
+      return;
+    }
+
+    final url = Uri.parse('http://192.168.67.164:5000/upload');  // for emulator
+    // OR
+    // final url = Uri.parse('http://YOUR_COMPUTER_IP:5000/upload');  // for physical device
+    
+    try {
+      print('Preparing to send image to API');
+      var request = http.MultipartRequest('POST', url);
+      
+      print('Adding image to request');
+      request.files.add(http.MultipartFile.fromBytes(
+        'image',
+        _capturedImageData!,
+        filename: 'image.jpg',
+      ));
+
+      print('Sending request to API');
+      var streamedResponse = await request.send();
+      var response = await http.Response.fromStream(streamedResponse);
+
+      print('Received response from API');
+      print('Status code: ${response.statusCode}');
+      print('Response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        print('Image uploaded successfully');
+        // You can show a success message to the user here
+      } else {
+        print('Failed to upload image. Status code: ${response.statusCode}');
+        // You can show an error message to the user here
+      }
+    } catch (e) {
+      print('Error sending image to API: $e');
+      // You can show an error message to the user here
+    }
+  }
 
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
@@ -125,6 +150,28 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {}); // Trigger a rebuild after camera initialization
   }
 
+  Future<void> _captureImage() async {
+    try {
+      final image = await _controller.takePicture();
+      if (kIsWeb) {
+        // For web platform
+        final imageData = await image.readAsBytes();
+        setState(() {
+          _capturedImageData = imageData;
+          _lastCapturedImagePath = null;  // Web doesn't use file paths
+        });
+      } else {
+        // For mobile platforms
+        setState(() {
+          _capturedImageData = File(image.path).readAsBytesSync();
+          _lastCapturedImagePath = image.path;
+        });
+      }
+    } catch (e) {
+      print('Error capturing image: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -140,45 +187,47 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _incrementCounter() {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
       _counter++;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: _controller.value.isInitialized
-            ? CameraPreview(_controller) // Display camera preview if initialized
-            : CircularProgressIndicator(), // Show loading indicator while initializing
+      body: Column(
+        children: [
+          Expanded(
+            child: _controller.value.isInitialized
+                ? CameraPreview(_controller)
+                : CircularProgressIndicator(),
+          ),
+          if (_capturedImageData != null)
+            Expanded(
+              child: Column(
+                children: [
+                  Expanded(
+                    child: kIsWeb
+                        ? Image.memory(_capturedImageData!)
+                        : Image.file(File(_lastCapturedImagePath!)),
+                  ),
+                  ElevatedButton(
+                    onPressed: _sendImageToApi,
+                    child: Text('Send to API'),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+        onPressed: _controller.value.isInitialized ? _captureImage : null,
+        tooltip: 'Capture Image',
+        child: const Icon(Icons.camera),
+      ),
     );
   }
 }
